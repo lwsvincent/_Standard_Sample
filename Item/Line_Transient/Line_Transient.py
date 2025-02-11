@@ -1,6 +1,13 @@
 from ...Library.importer import *
 
 
+class Accuracy_Sampleunit(Serializable_Data):
+    def __init__(self) -> None:
+        super().__init__()
+        self.Value = JudgementData_Float()
+        self.Accuray = JudgementData_Float()
+
+
 class PowerOnCheckUnit(Serializable_Data):
     def __init__(self) -> None:
         super().__init__()
@@ -16,68 +23,50 @@ class LogUnit(ItemCore.LogUnit):
     def __init__(self) -> None:
         super().__init__()
         self.PSON = ["Low", "Low"]
-
-        self.Input = Voltage_Data()
-        self.TurnOnDelayTime: float = 0.0
-
         self.Load: List[float] = [0.0, 0.0]
         self.LoadA: List[float] = [0.0, 0.0]
-
-        self.Seq_Volt_List: List[float] = [0.0, 0.0]
-        self.Seq_Duration_List: List[float] = [1.0, 1.0]
-        self.Seq_StartDeg_List: List[float] = [0.0, 0.0]
-        self.Seq_Cycle = 1
+        self.Input = Voltage_Data()
+        self.Pin = Accuracy_Sampleunit()
+        self.Vin = Accuracy_Sampleunit()
+        self.Iin = Accuracy_Sampleunit()
+        self.Pout: List[Accuracy_Sampleunit] = [Accuracy_Sampleunit(), Accuracy_Sampleunit()]
+        self.Vout: List[Accuracy_Sampleunit] = [Accuracy_Sampleunit(), Accuracy_Sampleunit()]
+        self.Iout: List[Accuracy_Sampleunit] = [Accuracy_Sampleunit(), Accuracy_Sampleunit()]
+        self.Inst_Vin: float = 0.0
+        self.Inst_Iin: float = 0.0
+        self.Inst_Pin: float = 0.0
+        self.I2C_Vin: float = 0.0
+        self.I2C_Iin: float = 0.0
+        self.I2C_Pin: float = 0.0
+        self.TurnOnDelayTime: float = 0.0
         self.Transent_Volt = 0.0
-        self.Transent_Duration = 0.0
-        self.Transent_StartDeg = 0.0
-
-        self.Spec1: JudgementData_Float = JudgementData_Float()
-        self.Spec2: JudgementData_Float = JudgementData_Float()
-        self.Spec3: JudgementData_Float = JudgementData_Float()
-        self.Spec4: JudgementData_Float = JudgementData_Float()
-        self.Spec5: JudgementData_Float = JudgementData_Float()
-        self.Spec6: JudgementData_Float = JudgementData_Float()
-        self.Spec7: JudgementData_Float = JudgementData_Float()
-        self.Spec8: JudgementData_Float = JudgementData_Float()
-
-        # self.Check_Befroe_test = PowerOnCheckUnit()
-        # self.Check_After_Turn_ON = PowerOnCheckUnit()
         self.Check_After_Test = PowerOnCheckUnit()
-
-        self.Picture = ""
-        self.Remark = ""
+        # FW Status
+        self.FW_79h = JudgementData_Hex(Fill_Zero=4)
+        self.FW_7Ah = JudgementData_Hex(Fill_Zero=2)
+        self.FW_7Bh = JudgementData_Hex(Fill_Zero=2)
+        self.FW_7Ch = JudgementData_Hex(Fill_Zero=2)
 
 
 class TestItem(ItemCore.TestItem):
     def __init__(self, Name: str = "", logUnit: LogUnit = LogUnit()) -> None:
         super().__init__(Name, logUnit)
 
-    def PLD_VinScale_Adjust(self, case: LogUnit):
-        """
-        此功能可以協助設定PLD下的Vin_Vertical scale,
-        這樣User就不用在excel parameter裡面一直改Vin scale囉.
-        """
+    def Parameter_Initial(self, case: LogUnit):
+        for i in range(len(case.Load)):
+            case.LoadA[i] = case.Load[i] * PSU.get_LoadMax(i, case.Input.Voltage, case.Input.Frequency) / 100
 
-        # 先找到實際上Vin所設定的channel.
+    def PSU_Power_ON_and_Load_ON(self, case: LogUnit):
 
-        VIN_CH = case.Scope_Setting.Channels.Vin
-        # 根據輸入電壓設置 Vin_Scale
-        if case.Input.Frequency > 0:
-            if case.Input.Voltage <= 120:
-                Vin_Scale = 100
-            elif case.Input.Voltage <= 240:
-                Vin_Scale = 200
-            else:
-                Vin_Scale = 500
-        else:
-            if case.Input.Voltage <= 200:
-                Vin_Scale = 100
-            elif case.Input.Voltage <= 350:
-                Vin_Scale = 200
-            else:
-                Vin_Scale = 200
-        # 設置 Channel 的垂直範圍
-        Scope[0].Set_ChannelVerticalRange(VIN_CH.Scope_Channel, Vin_Scale)
+        for i in range(self.Test_Plan_Data.Sample_Size):
+            PSUx[i].PSON.Set_Value(True)
+
+        # Load & input setting & turn on (使用sag volt去判斷要吃的Load Cond., 避免觸動OCP)
+        for i in range(len(case.Load)):
+            Load[i].Load_CC_ON_Amp(case.Load[i] * PSU.get_LoadMax(i, case.Transent_Volt, case.Input.Frequency) / 100)
+
+        Source[0].Turn_ON(case.Input)
+        Delay(case.TurnOnDelayTime)
 
     def Power_ON_Check(self, case: PowerOnCheckUnit) -> bool:
         pf = True
@@ -96,119 +85,81 @@ class TestItem(ItemCore.TestItem):
             pf &= case.Vout[i].SetMeasure_AutoJudge(Load[i].read_voltage())
         return pf
 
-    def First_Run(self):
-        super().First_Run()
-        Scope[0].measurement_delete_all()
-        Scope[0].Disable_All_Channels()
+        Vin_waveform = Scope[0].GetWaveformData(case.Scope_Setting.Channels.Vin.Scope_Channel)
+        Alert_waveform = Scope[0].GetWaveformData(case.Scope_Setting.Channels.SMBAlert.Scope_Channel)
+        timeunit = Scope[0].GetWaveformTimeUnit
+        Channel_Y1 = case.Scope_Setting.Channels.Vin.Scope_Channel
+        Channel_Y2 = case.Scope_Setting.Channels.SMBAlert.Scope_Channel
 
-    def Parameter_Initial(self, case: LogUnit):
-        case.Transent_Volt = case.Seq_Volt_List[0]
-        case.Transent_Duration = case.Seq_Duration_List[0] * 1000
-        case.Transent_StartDeg = case.Seq_StartDeg_List[0]
-        # 使用sag volt去判斷要吃的Load Cond., 避免觸動OCP
-        for i in range(len(case.Load)):
-            case.LoadA[i] = case.Load[i] * PSU.get_LoadMax(i, case.Transent_Volt, case.Input.Frequency) / 100
+        x1_Vin = 0
+        for vin in Vin_waveform:
+            if vin > 300:
+                break
+            x1_Vin += 1
+        Vin_X1_Position = x1_Vin * timeunit
 
-    def Setup_Scope(self, case: LogUnit) -> bool:
-        # Scope Setting
-        Scope_EX.Set_Channel(case.Scope_Setting)
-        Scope_EX.Set_Measure(case.Scope_Setting)
-        Scope_EX.Set_Timebase(case.Scope_Setting)
-        Scope_EX.Set_Trigger(case.Scope_Setting)
-        # Scope[0].Cursor.Off()
-        self.PLD_VinScale_Adjust(case)
-        Scope[0].Trigger.Action(Trigger_Action.Auto)
+        x2_SMBAlert = 0
+        for SMBAlert in Alert_waveform:
+            if SMBAlert > 1.7:
+                break
+            x2_SMBAlert += 1
+        Alert_X2_Position = x2_SMBAlert * timeunit
 
-        # 判斷Scope timebase, 如果>10S/Div就用滾動模式抓圖, 反之用single模式
-        """
-        #長時間的timebase會造成S/R下降, InputSource的Ext pulse width 太短會無法正常trigger. 
-        #(5V的ext signal可能只會show 0.2V base on 12.5KS/s SR.威仁實測結果)
-        """
-        if Scope[0].Timebase.Scale <= 4:
-            Scope[0].Trigger.Action(Trigger_Action.Single)
-            if not Scope[0].WatiForTrigger_Ready(100):
-                print("Scope is not ready")
-                case.Fail_Description.append("Scope is not ready")
-                return False
+        Timediff = Alert_X2_Position - Vin_X1_Position
 
-        else:
-            Scope[0].Trigger.Action(Trigger_Action.Auto)
-            Delay(Scope[0].Timebase.Scale * 2)  # pre-run timebase兩格
-        return True
+        Scope[0].Cursor.set_Cursor_Sec_Volt(Vin_X1_Position, Alert_X2_Position, 300, 1.7, Channel_Y1, Channel_Y2)
 
-    def PSU_Power_ON_and_Load_ON(self, case: LogUnit):
-        for i in range(self.Test_Plan_Data.Sample_Size):
-            if case.PSON[i] == "Low":
-                PSUx[i].PSON.Set_Value(True)
-            else:
-                PSUx[i].PSON.Set_Value(False)
+        case.Measure_Time.SetMeasure_AutoJudge(Timediff)
 
-        # Load & input setting & turn on (使用sag volt去判斷要吃的Load Cond., 避免觸動OCP)
-        for i in range(len(case.Load)):
-            Load[i].Load_CC_ON_Amp(case.Load[i] * PSU.get_LoadMax(i, case.Transent_Volt, case.Input.Frequency) / 100)
-
-        Source[0].Sequence_ON_(case.Input)
-        Delay(case.TurnOnDelayTime)
-
-    def DO_PLD(self, case: LogUnit):
-
-        # PLD執行
-        All_Step = []
-        for x in range(len(case.Seq_Volt_List)):
-            PLD_Step: Source_Sequence_Step
-            if case.Input.Frequency != 0:
-                # AC_PLD
-                PLD_Step = Source_Sequence_Step(case.Seq_Duration_List[x], case.Seq_Volt_List[x], case.Input.Frequency, 0, case.Seq_StartDeg_List[x])
-            else:
-                # DC_PLD
-                PLD_Step = Source_Sequence_Step(case.Seq_Duration_List[x], 0, 0, case.Seq_Volt_List[x])
-            All_Step.append(PLD_Step)
-
-        Source[0].Sequence_Run(case.Seq_Cycle, 1, All_Step)
-
-    def Wait_Scope_finished(self, case: LogUnit) -> bool:
-
-        if Scope[0].Timebase.Scale <= 4:
-            if not Scope[0].WatiForTrigger_Save(100):
-                print("Scope is not save sucessful.")
-                case.Fail_Description.append("Scope is not save sucessful.")
-                return False
-
-        else:
-            TotalWaveformTime = Scope[0].Timebase.Scale * 10
-            RemainingTime = TotalWaveformTime - Scope[0].Timebase.Scale * 2 + Scope[0].Timebase.Scale * 0.25  # 加上0.25格timebase buffer.
-            print("等待" + str(RemainingTime) + "秒, 示波器滾動一張圖的時間.")
-            Delay(RemainingTime)
-
-        Scope[0].Trigger.Action(Trigger_Action.Stop)
-        return True
-
-    def Scope_Set_Cursor_and_Save_Picture(self, case: LogUnit):
-
-        if case.Seq_Cycle == 1:
-            Scope[0].Cursor.set_Cursor_Sec_Volt(0, case.Transent_Duration / 1000, Channel_Y=case.Scope_Setting.Channels.Vin.Scope_Channel, Channel_Y2=case.Scope_Setting.Channels.Vin.Scope_Channel)
-
-        if case.Scope_Setting.Channels.External.Enable:
-            Scope[0].Set_ChannelEnable(case.Scope_Setting.Channels.External.Scope_Channel, False)
+        case.Picture = self.SavePicture(Scope[0], str(case.Index))
         case.Picture = Scope[0].SavePicture(self.GetImagePath(str(case.Index)))  # Save image
+
+    def Read_Inst_I2C(self, case: LogUnit):
+        case.Inst_Vin = Meter[0].Get_VoltageRMS()
+        case.Inst_Iin = Meter[0].Get_CurrentRMS()
+        case.Inst_Pin = Meter[0].Get_Power_Real()
+        # case.I2C_Vin = PSU1.Read_Vin()
+        # case.I2C_Iin = PSU1.Read_Iin()
+        # case.I2C_Pin = PSU1.Read_Pout()
+        case.I2C_Vin = 120
+        case.I2C_Iin = 120
+        case.I2C_Pin = 120
+
+        Vout0_inst = Load[0].read_voltage()
+        Vout0_I2C = PSU1.Read_Vout(0)
+
+        Vout0_Accuracy = (Vout0_inst - Vout0_I2C) / Vout0_inst
+        case.Vout[0].Accuray.SetMeasure_AutoJudge(Vout0_Accuracy)
+
+        Vout1_inst = Load[1].read_voltage()
+        Vout1_I2C = PSU1.Read_Vout(1)
+
+        Vout1_Accuracy = (Vout1_inst - Vout1_I2C) / Vout1_inst
+        case.Vout[1].Accuray.SetMeasure_AutoJudge(Vout1_Accuracy)
+
+    def Calculation(self, case: LogUnit):
+        Vin_Accuracy = (case.Inst_Vin - case.I2C_Vin) / case.Inst_Vin
+        Iin_Accuracy = (case.Inst_Iin - case.I2C_Iin) / case.Inst_Iin
+        Pin_Accuracy = (case.Inst_Pin - case.I2C_Pin) / case.Inst_Pin
+        Vin_Value = abs(case.Inst_Vin - case.I2C_Vin)
+        Iin_Value = abs(case.Inst_Iin - case.I2C_Iin)
+        Pin_Value = abs(case.Inst_Pin - case.I2C_Pin)
+
+        case.Vin.Accuray.SetMeasure_AutoJudge(Vin_Accuracy)
+        case.Iin.Accuray.SetMeasure_AutoJudge(Iin_Accuracy)
+        case.Pin.Accuray.SetMeasure_AutoJudge(Pin_Accuracy)
+        case.Vin.Value.SetMeasure_AutoJudge(Vin_Value)
+        case.Iin.Value.SetMeasure_AutoJudge(Iin_Value)
+        case.Pin.Value.SetMeasure_AutoJudge(Pin_Value)
 
     def Run_Single_Condition(self, case: LogUnit):
         super().Run_Single_Condition(case)
+        # self.Parameter_Initial(case)
+        # PSU.PSU_OFF()
+        # self.PSU_Power_ON_and_Load_ON(case)
+        # self.Power_ON_Check(case.Check_After_Test)
 
-        self.Parameter_Initial(case)
+        self.Read_Inst_I2C(case)
+        self.Calculation(case)
 
-        PSU.PSU_OFF()
-
-        self.PSU_Power_ON_and_Load_ON(case)
-        if not self.Setup_Scope(case):
-            return
-        self.DO_PLD(case)
-
-        if self.Wait_Scope_finished(case) == False:
-            return
-
-        self.Power_ON_Check(case.Check_After_Test)
-        self.Scope_Set_Cursor_and_Save_Picture(case)
-        case.PassFail = True
-        case.PassFail &= self.Judge_Scope_Measures(case)
-        case.PassFail &= case.Check_After_Test.PassFail
+        # case.PassFail = True
